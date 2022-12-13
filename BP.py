@@ -1,5 +1,8 @@
 import math
 import random
+import numpy as np
+import pandas as pd
+import scipy.special
 
 def rand(a, b):
     return (b - a) * random.random() + a
@@ -11,16 +14,32 @@ def make_matrix(m, n, fill=0.0):  # 创造一个指定大小的矩阵
         mat.append([fill] * n)
     return mat
 
+def relu(input):
+    return np.maximum(0, input)
+
 def sigmoid(x):
-    return 1.0 / (1.0 + math.exp(-x))
+    try:
+        result = 1.0 / (1.0 + math.exp(-x))
+    except OverflowError:
+        result = math.inf
+    return result
 
 def sigmoid_derivate(x):
     return x * (1 - x)
 
+def softmax(x):
+    x = x - np.max(x)
+    exp_x = np.exp(x)
+    softmax_x = exp_x / np.sum(exp_x)
+    return softmax_x
+
+def softmax_derivate(x, eta):
+    dout = np.diag(x) - np.outer(x, x)
+    return np.dot(dout, eta)
+
 class BPNeuralNet:
     """BP神经网络(包含两层隐藏层)"""
     
-
     def __init__(self):
         """
         input_weights:输入层与第一层隐藏层之间的权值矩阵
@@ -93,24 +112,29 @@ class BPNeuralNet:
             for j in range(self.num_input):
                 res += self.input_cells[j] * self.input_weights[j][i]
             self.hidden1_cells[i] = sigmoid(res)
+            # self.hidden1_cells[i] = relu(res)
         for i in range(self.num_hidden2):
             res = 0.0
             for j in range(self.num_hidden1):
                 res += self.hidden1_cells[j] * self.hidden_weights[j][i]
             self.hidden2_cells[i] = sigmoid(res)
+            # self.hidden2_cells[i] = relu(res)
         for i in range(self.num_output):
             res = 0.0
             for j in range(self.num_hidden2):
                 res += self.hidden2_cells[j] * self.output_weights[j][i]
-            tmp = sigmoid(res)
-            self.output_cells[i] = 1 if tmp > 0.5 else 0
+            self.output_cells[i] = res
+        self.output_cells = softmax(self.output_cells)
+        # self.output_cells = scipy.special.softmax(self.output_cells, axis=0)
+        return int(np.argmax(self.output_cells))
 
     
     def backPropagation(self, case, label, learning_rate, correct_rate):
+        pred = self.predict(case)
         delta_output = [0.0] * self.num_output
-        for i in range(self.num_output):
-            error = label[i] - self.output_cells[i]
-            delta_output[i] = sigmoid_derivate(self.output_cells[0]) * error
+        error = label - self.output_cells
+        delta_output = softmax_derivate(self.output_cells, error)
+        
         delta_hidden2 = [0.0] * self.num_hidden2
         for i in range(self.num_hidden2):
             error = 0.0
@@ -128,33 +152,73 @@ class BPNeuralNet:
             for j in range(self.num_output):
                 change = delta_output[j] * self.hidden2_cells[i]
                 self.output_weights[i][j] += learning_rate * change + correct_rate * self.output_correction[i][j]
-                self.output_correction[i][j] += change
+                self.output_correction[i][j] = change
         for i in range(self.num_hidden1):
             for j in range(self.num_hidden2):
                 change = delta_hidden2[j] * self.hidden1_cells[i]
                 self.hidden_weights[i][j] += learning_rate * change + correct_rate * self.hidden_correction[i][j]
-                self.hidden_correction[i][j] += change
+                self.hidden_correction[i][j] = change
         for i in range(self.num_input):
             for j in range(self.num_hidden1):
                 change = delta_hidden1[j] * self.input_cells[i]
                 self.input_weights[i][j] += learning_rate * change + correct_rate * self.input_correction[i][j]
-                self.input_correction[i][j] += change
-        global_error = 0.0
+                self.input_correction[i][j] = change
+        global_error = 0.0  
         for i in range(len(label)):
             global_error += 0.5 * (label[i] - self.output_cells[i]) ** 2
         return global_error
 
-    def train(self, cases, labels, max_epochs = 10000, learning_rate = 0.05, correct_rate = 0.1):
-        
+    def train(self, cases, labels, max_epochs = 1000, learning_rate = 50, correct_rate = 0.98):
         for epoch in range(max_epochs):
             error = 0.0
             for i, case in enumerate(cases):
                 label = labels[i]
-                self.predict(case)
                 error += self.backPropagation(case, label, learning_rate, correct_rate)
+            if epoch % 20 == 0: #每20轮显示一次
+                print(f'Epoch {epoch}, error : {error}')
 
-    def test(self):
-        pass
+    def test(self, test_data, test_label):
+        true = 0
+        for i in range(len(test_data)):
+            pred = self.predict(test_data[i])
+            ground_truth = int(np.argmax(test_label[i]))
+            if ground_truth == pred:
+                true += 1
+        print(f'Test accuracy : {true / len(test_data)}')
+
 
 if __name__ == "__main__":
-    pass
+    #数据集加载
+    df = pd.read_csv('./data/iris.data', delimiter=',', header=None)
+    df.columns = ['sepal length', 'sepal width', 'petal length', 'petal width', 'label']
+    # print(df.shape) #(150, 5)
+
+    #对数据进行预处理
+    labels_mapping = {'Iris-setosa':0, 'Iris-versicolor':1, 'Iris-virginica':2}
+    df['label'] = df['label'].map(labels_mapping)
+    data = np.array(df)
+    X, y = data[:,:-1], data[:,-1]
+    # print(X.shape, y.shape)  #(150, 4) (150,)
+    
+    #划分训练集、测试集
+    from sklearn.model_selection import train_test_split
+    train_data, test_data, train_label, test_label = train_test_split(X, y, test_size=0.2, random_state=666)
+    # print(train_data.shape, test_data.shape, train_label.shape, test_label.shape) #(120, 4) (30, 4) (120,) (30,)
+
+    #one-hot encoding
+    from sklearn import preprocessing
+    lb = preprocessing.LabelBinarizer()
+    lb.fit(train_label)
+    train_label = lb.transform(train_label)
+    test_label = lb.transform(test_label)
+    # print(train_label.shape, test_label.shape)  #(120, 3) (30, 3)
+    
+    #创建模型
+    model = BPNeuralNet()
+    model.setup(4, 20, 10, 3)
+
+    #训练模型
+    model.train(cases=train_data, labels=train_label, max_epochs=1000)
+
+    #测试模型
+    model.test(test_data, test_label)
